@@ -1,0 +1,120 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Components/SceneComponent.h"
+#include "Engine/StaticMesh.h"
+#include "GrassBladeMeshBuilder.h"
+#include "GrassInstanceData.h"
+
+#include "Materials/MaterialInterface.h"
+
+#include "ProceduralGrassComponent.generated.h"
+
+/**
+ * Procedural grass: holds instance/clump data and syncs rendering to a child HISM (GPUScene / instancing path).
+ * If Blade Mesh is unset, a transient UStaticMesh is built at runtime from FGrassBladeMeshBuilder (BladeHeight / BladeBaseWidth / RenderGrassLOD).
+ */
+UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
+class UProceduralGrassComponent : public USceneComponent
+{
+	GENERATED_BODY()
+
+public:
+	UProceduralGrassComponent();
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Blade")
+	float BladeHeight = 100.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Blade")
+	float BladeBaseWidth = 10.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Blade")
+	EGrassBladeMeshLOD BladeLOD = EGrassBladeMeshLOD::LOD0;
+
+	/** Reserved for future per-draw LOD selection (StaticMesh LOD or alternate assets). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Blade")
+	EGrassBladeMeshLOD RenderGrassLOD = EGrassBladeMeshLOD::LOD0;
+
+	/** Applied to GrassHISM material slot 0. For thin blades, enable Two Sided on the material (not set from code). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Material")
+	TObjectPtr<UMaterialInterface> GrassMaterial;
+
+	/** If set, used on GrassHISM; if null, a runtime mesh is built from BladeHeight / BladeBaseWidth / RenderGrassLOD. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Render")
+	TObjectPtr<UStaticMesh> BladeMesh;
+
+	/** Runtime-generated blade (when BladeMesh is null). Not serialized. */
+	UPROPERTY(Transient, VisibleAnywhere, Category = "GrassPCG|Render")
+	TObjectPtr<UStaticMesh> RuntimeBladeMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Instances", meta = (TitleProperty = "PositionWS"))
+	TArray<FGrassInstanceData> GrassInstances;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Clumps", meta = (TitleProperty = "CenterWS"))
+	TArray<FGrassClumpData> GrassClumps;
+
+	/** Local XY axis-aligned rectangle for procedural generation (component space, cm). Z is ignored; instances sit at Z=0. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate")
+	FVector2f DistributionMin = FVector2f(-500.f, -500.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate")
+	FVector2f DistributionMax = FVector2f(500.f, 500.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate", meta = (ClampMin = "1"))
+	int32 NumClumps = 16;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate", meta = (ClampMin = "1"))
+	int32 NumInstances = 100;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate")
+	int32 DistributionRandomSeed = 1;
+
+	/** If true, **BeginPlay** runs **GenerateGrassDistribution** once (runtime). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate")
+	bool bAutoGenerateOnBeginPlay = true;
+
+	/** Editor only (ignored at runtime): on **OnRegister**, if **GrassInstances** is empty, run **GenerateGrassDistribution** once. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate")
+	bool bEditorGenerateOnRegisterIfEmpty = true;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GrassPCG|Render", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UHierarchicalInstancedStaticMeshComponent> GrassHISM;
+
+	UFUNCTION(BlueprintCallable, Category = "GrassPCG|Render")
+	UHierarchicalInstancedStaticMeshComponent* GetGrassHISM() const { return GrassHISM; }
+
+	/** Push GrassInstances to GrassHISM (transforms + per-instance custom data). Call after changing instances at runtime. */
+	UFUNCTION(BlueprintCallable, Category = "GrassPCG|Render")
+	void SyncGrassInstancesToHISM();
+
+	/**
+	 * Procedural step: fill **GrassClumps** (K random centers) and **GrassInstances** (N random points) in the XY rectangle,
+	 * assign each instance to the nearest clump in XY, then sync HISM. Does **not** run when only editing generate params (call explicitly or rely on BeginPlay / editor auto).
+	 */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "GrassPCG|Generate", meta = (DisplayName = "Generate Grass"))
+	void GenerateGrassDistribution();
+
+protected:
+	virtual void BeginPlay() override;
+	virtual void PostLoad() override;
+	virtual void OnRegister() override;
+	virtual void OnUnregister() override;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
+	/** Editor: when the assigned grass material (or its parent) finishes recompiling, refresh HISM draw state. */
+	void OnEditorGrassMaterialCompiled(UMaterialInterface* CompiledMaterial);
+#endif
+
+private:
+	void ConfigureGrassHISM();
+	void ApplyBladeMeshAndMaterial();
+	void BuildRuntimeBladeMeshIfNeeded();
+	void SyncRuntimeBladeMeshStaticMaterial(UMaterialInterface* Material);
+
+	static void NormalizeDistributionRect(FVector2f& OutMin, FVector2f& OutMax);
+};
