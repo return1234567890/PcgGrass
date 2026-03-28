@@ -15,7 +15,7 @@
 
 /**
  * Procedural grass: holds instance/clump data and syncs rendering to a child HISM (GPUScene / instancing path).
- * If Blade Mesh is unset, a transient UStaticMesh is built at runtime from FGrassBladeMeshBuilder (BladeHeight / BladeBaseWidth / RenderGrassLOD).
+ * If Blade Mesh is unset, a transient UStaticMesh is built at runtime from FGrassBladeMeshBuilder (unit template / RenderGrassLOD).
  */
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class UProceduralGrassComponent : public USceneComponent
@@ -24,12 +24,6 @@ class UProceduralGrassComponent : public USceneComponent
 
 public:
 	UProceduralGrassComponent();
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Blade")
-	float BladeHeight = 100.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Blade")
-	float BladeBaseWidth = 10.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Blade")
 	EGrassBladeMeshLOD BladeLOD = EGrassBladeMeshLOD::LOD0;
@@ -42,7 +36,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Material")
 	TObjectPtr<UMaterialInterface> GrassMaterial;
 
-	/** If set, used on GrassHISM; if null, a runtime mesh is built from BladeHeight / BladeBaseWidth / RenderGrassLOD. */
+	/** If set, used on GrassHISM; if null, a runtime unit-size blade mesh is built from RenderGrassLOD. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Render")
 	TObjectPtr<UStaticMesh> BladeMesh;
 
@@ -102,6 +96,8 @@ protected:
 	virtual void PostLoad() override;
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
+	/** Destroy **GrassHISM** before **Super** so **USceneComponent** does not re-parent the child to the attach grandparent (editor + runtime). */
+	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -115,6 +111,11 @@ private:
 	void ApplyBladeMeshAndMaterial();
 	void BuildRuntimeBladeMeshIfNeeded();
 	void SyncRuntimeBladeMeshStaticMaterial(UMaterialInterface* Material);
+
+	// The blade mesh template dimensions used to convert clump absolute dimensions
+	// into per-instance scale (so it works even when `BladeMesh` is preauthored at a non-unit size).
+	float TemplateBladeHeight = 1.f;     // Z span in local space (BladeHeight direction)
+	float TemplateBladeBaseWidth = 1.f;  // X span in local space (BladeBaseWidth direction)
 
 	static void NormalizeDistributionRect(FVector2f& OutMin, FVector2f& OutMax);
 };

@@ -67,7 +67,7 @@ namespace PcgGrassHISM
 		const FVector Loc(I.PositionWS);
 		const float YawDeg = FMath::RadiansToDegrees(FMath::Atan2(I.Direction.Y, I.Direction.X));
 		const FRotator Rot(0.f, YawDeg, 0.f);
-		// Scale matches prior bounds: X/Y blade width, Z height (template mesh expected at BladeBaseWidth x BladeHeight).
+		// BladeH/BladeW are instance scale factors relative to the template mesh.
 		const FVector Scale3D(
 			FMath::Max(KINDA_SMALL_NUMBER, BladeW * I.Width),
 			FMath::Max(KINDA_SMALL_NUMBER, BladeW * I.Width * 0.4f),
@@ -200,6 +200,8 @@ void UProceduralGrassComponent::ConfigureGrassHISM()
 	GrassHISM->CastShadow = true;
 	GrassHISM->bCastDynamicShadow = true;
 	GrassHISM->SetCanEverAffectNavigation(false);
+	// Grass instances may be far from the actor/component origin; using parent bounds can cause incorrect frustum/occlusion culling.
+	GrassHISM->bUseAttachParentBound = false;
 }
 
 void UProceduralGrassComponent::BuildRuntimeBladeMeshIfNeeded()
@@ -208,14 +210,10 @@ void UProceduralGrassComponent::BuildRuntimeBladeMeshIfNeeded()
 	{
 		return;
 	}
-	if (BladeHeight <= KINDA_SMALL_NUMBER || BladeBaseWidth <= KINDA_SMALL_NUMBER)
-	{
-		return;
-	}
-
+	// Build a unit-size blade mesh; per-instance/clump scaling will produce the final dimensions.
 	TArray<FDynamicMeshVertex> DynVerts;
 	TArray<uint32> Indices;
-	FGrassBladeMeshBuilder::Build(BladeHeight, BladeBaseWidth, RenderGrassLOD, DynVerts, Indices);
+	FGrassBladeMeshBuilder::Build(1.f, 1.f, RenderGrassLOD, DynVerts, Indices);
 	if (DynVerts.Num() == 0 || Indices.Num() < 3)
 	{
 		return;
@@ -231,7 +229,7 @@ void UProceduralGrassComponent::BuildRuntimeBladeMeshIfNeeded()
 	{
 		TArray<FDynamicMeshVertex> LODVerts;
 		TArray<uint32> LODIndices;
-		FGrassBladeMeshBuilder::Build(BladeHeight, BladeBaseWidth, LOD, LODVerts, LODIndices);
+		FGrassBladeMeshBuilder::Build(1.f, 1.f, LOD, LODVerts, LODIndices);
 		if (LODVerts.Num() == 0 || LODIndices.Num() < 3)
 		{
 			return;
@@ -361,9 +359,18 @@ void UProceduralGrassComponent::ApplyBladeMeshAndMaterial()
 	{
 		GrassHISM->SetStaticMesh(BladeMesh);
 		GrassHISM->SetMaterial(0, Mat);
+
+		// Convert clump absolute dimensions into instance scale factors based on the provided mesh bounds.
+		const FBoxSphereBounds BladeMeshBounds = BladeMesh->GetBounds();
+		const float TemplateH = BladeMeshBounds.BoxExtent.Z * 2.f;
+		const float TemplateW = BladeMeshBounds.BoxExtent.X * 2.f;
+		TemplateBladeHeight = (TemplateH > KINDA_SMALL_NUMBER) ? TemplateH : 1.f;
+		TemplateBladeBaseWidth = (TemplateW > KINDA_SMALL_NUMBER) ? TemplateW : 1.f;
 	}
 	else
 	{
+		TemplateBladeHeight = 1.f;
+		TemplateBladeBaseWidth = 1.f;
 		BuildRuntimeBladeMeshIfNeeded();
 		if (RuntimeBladeMesh)
 		{
@@ -418,6 +425,21 @@ void UProceduralGrassComponent::OnUnregister()
 	Super::OnUnregister();
 }
 
+void UProceduralGrassComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
+{
+	if (!HasAnyFlags(RF_ClassDefaultObject) && GrassHISM)
+	{
+		UHierarchicalInstancedStaticMeshComponent* const HISMToDestroy = GrassHISM;
+		GrassHISM = nullptr;
+		if (IsValid(HISMToDestroy))
+		{
+			HISMToDestroy->DestroyComponent();
+		}
+	}
+
+	Super::OnComponentDestroyed(bDestroyingHierarchy);
+}
+
 #if WITH_EDITOR
 void UProceduralGrassComponent::OnEditorGrassMaterialCompiled(UMaterialInterface* CompiledMaterial)
 {
@@ -444,12 +466,6 @@ void UProceduralGrassComponent::SyncGrassInstancesToHISM()
 		return;
 	}
 
-	if (BladeHeight <= KINDA_SMALL_NUMBER || BladeBaseWidth <= KINDA_SMALL_NUMBER)
-	{
-		GrassHISM->ClearInstances();
-		return;
-	}
-
 	TArray<FGrassInstanceData> Source = GrassInstances;
 	if (Source.Num() == 0)
 	{
@@ -459,11 +475,33 @@ void UProceduralGrassComponent::SyncGrassInstancesToHISM()
 	GrassHISM->ClearInstances();
 	GrassHISM->SetNumCustomDataFloats(PcgGrassHISM::NumCustomDataFloats);
 
+	// Cache per-instance effective blade size so transform + custom-data stay consistent.
+	TArray<float> EffBladeHeights;
+	TArray<float> EffBladeWidths;
+	EffBladeHeights.SetNumUninitialized(Source.Num());
+	EffBladeWidths.SetNumUninitialized(Source.Num());
+
+	const float SafeTemplateBladeH = (TemplateBladeHeight > KINDA_SMALL_NUMBER) ? TemplateBladeHeight : 1.f;
+	const float SafeTemplateBladeW = (TemplateBladeBaseWidth > KINDA_SMALL_NUMBER) ? TemplateBladeBaseWidth : 1.f;
+
 	TArray<FTransform> Transforms;
 	Transforms.Reserve(Source.Num());
-	for (const FGrassInstanceData& I : Source)
+	for (int32 i = 0; i < Source.Num(); ++i)
 	{
-		Transforms.Add(PcgGrassHISM::InstanceToLocalTransform(I, BladeHeight, BladeBaseWidth));
+		const FGrassInstanceData& I = Source[i];
+		float EffBladeH = 1.f;
+		float EffBladeW = 1.f;
+		if (GrassClumps.IsValidIndex(I.ClumpIndex))
+		{
+			const FGrassClumpData& Clump = GrassClumps[I.ClumpIndex];
+			// Convert clump absolute dimensions to instance scale factors relative to the template mesh.
+			EffBladeH = Clump.BladeHeight / SafeTemplateBladeH;
+			EffBladeW = Clump.BladeBaseWidth / SafeTemplateBladeW;
+		}
+		EffBladeHeights[i] = EffBladeH;
+		EffBladeWidths[i] = EffBladeW;
+
+		Transforms.Add(PcgGrassHISM::InstanceToLocalTransform(I, EffBladeH, EffBladeW));
 	}
 
 	GrassHISM->AddInstances(Transforms, false, false, false);
@@ -485,9 +523,11 @@ void UProceduralGrassComponent::SyncGrassInstancesToHISM()
 			WindStrength = FMath::Max(0.f, Clump.WindStrength);
 			WindPhase01 = PcgGrassHISM::EncodePhase01(Clump.WindPhase);
 		}
+		const float HeightScale = I.Height * EffBladeHeights[Index];
+		const float WidthScale = I.Width * EffBladeWidths[Index];
 		const float Custom[PcgGrassHISM::NumCustomDataFloats] = {
-			I.Height,
-			I.Width,
+			HeightScale,
+			WidthScale,
 			SeedBits,
 			static_cast<float>(I.ClumpIndex),
 			ClumpRGB.R,
@@ -503,6 +543,8 @@ void UProceduralGrassComponent::SyncGrassInstancesToHISM()
 	}
 
 	GrassHISM->MarkRenderStateDirty();
+	GrassHISM->UpdateBounds();
+	GrassHISM->MarkRenderTransformDirty();
 }
 
 #if WITH_EDITOR

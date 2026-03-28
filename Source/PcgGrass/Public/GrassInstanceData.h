@@ -47,6 +47,14 @@ struct FGrassClumpData
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grass")
 	FVector3f CenterWS = FVector3f::ZeroVector;
 
+	/** Blade base height for this clump (Z dimension). Used to scale the shared blade mesh. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grass")
+	float BladeHeight = 100.f;
+
+	/** Blade base width for this clump (X dimension). Used to scale the shared blade mesh. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grass")
+	float BladeBaseWidth = 10.f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grass")
 	float Radius = 100.f;
 

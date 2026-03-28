@@ -4,9 +4,16 @@
 
 `PcgGrass` 是基于虚幻5.7的程序化草生成插件。提供了一个用于“程序化草地”的运行时组件：根据一组分布参数生成草簇（clumps）与草实例（instances），并把实例转换为 `UHierarchicalInstancedStaticMeshComponent`（HISM）的实例变换与逐实例自定义数据。
 
-当你未显式指定 `BladeMesh` 时，插件会根据 `BladeHeight / BladeBaseWidth / RenderGrassLOD` 在运行时构建草刀片的 `UStaticMesh`（并支持 LOD0/1/2）。渲染侧通过 HISM 的实例自定义数据承载（例如风相关）信息。
+当你未显式指定 `BladeMesh` 时，插件会根据 `RenderGrassLOD` 在运行时构建“单位刀片” `UStaticMesh`（并支持 LOD0/1/2）。实际草叶高度/宽度由每个 clump 的 `GrassClumps[].BladeHeight / BladeBaseWidth` 通过实例缩放与 PerInstanceCustomData 传递给材质。
 
-## 2. 代码文件说明
+## 2. 演示视频
+
+<video controls width="1280" height="690">
+  <source src="./resources/showcase/PCGGrass.mp4" type="video/mp4">
+  您的浏览器不支持视频标签。
+</video>
+
+## 3. 代码文件说明
 
 以下文件位于 `Plugins/PcgGrass/Source/PcgGrass/`，是插件主要实现：
 
@@ -33,7 +40,7 @@
 6. `Source/PcgGrass/Public/GrassBladeMeshBuilder.h` 与 `Source/PcgGrass/Private/GrassBladeMeshBuilder.cpp`  
    负责生成“草刀片网格”的几何数据（LOD0/1/2），由组件在运行时把这些数据转为 `UStaticMesh`。
 
-## 3. 涉及的虚幻系统/组件
+## 4. 涉及的虚幻系统/组件
 
 插件主要依赖并使用以下虚幻系统：
 
@@ -62,14 +69,14 @@
    - `FDynamicMeshVertex` 与 `DynamicMeshBuilder.h`
    - `FGrassBladeMeshBuilder`：输出刀片顶点与三角形索引，再转换为 `UStaticMesh`
 
-## 4. 使用方法
+## 5. 使用方法
 
 ### 4.1 在关卡/Actor 中添加组件
 
 1. 在蓝图或 C++ Actor 中添加 `UProceduralGrassComponent`
 2. 设置生成/渲染参数：
-   - `BladeHeight`：刀片高度
-   - `BladeBaseWidth`：刀片根部宽度
+   - `GrassClumps[].BladeHeight`：clump 对应的刀片高度（影响实例缩放与自定义数据）
+   - `GrassClumps[].BladeBaseWidth`：clump 对应的刀片根部宽度（影响实例缩放与自定义数据）
    - `BladeLOD`（保留字段）：当前代码中用于编辑暴露，但渲染网格选择由 `RenderGrassLOD` 驱动
    - `RenderGrassLOD`：运行时构建刀片网格时选择的 LOD
    - `GrassMaterial`：HISM 材质槽 0 使用的材质（若为空将使用默认表面材质）
@@ -109,7 +116,7 @@
 
 对应的材质/渲染实现需要在 shader 中读取这些 custom data。
 
-## 5. 组件/插件代码调用流程（初始化 -> runtime -> 销毁）
+## 6. 组件/插件代码调用流程（初始化 -> runtime -> 销毁）
 
 下面按 UE 生命周期总结 `UProceduralGrassComponent` 的关键路径（不包含 Tick，因为组件默认不启用 Tick）：
 
