@@ -8,7 +8,7 @@
 
 ## 2. 演示视频
 
-  [演示视频](./resources/showcase/PCGGrass.mp4)
+  ![](resources/showcase/PCGGrass.gif)
 
 ## 3. 代码文件说明
 
