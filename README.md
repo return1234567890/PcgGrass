@@ -8,10 +8,7 @@
 
 ## 2. 演示视频
 
-<video controls width="1280" height="690">
-  <source src="./resources/showcase/PCGGrass.mp4" type="video/mp4">
-  您的浏览器不支持视频标签。
-</video>
+  [演示视频](./resources/showcase/PCGGrass.mp4)
 
 ## 3. 代码文件说明
 
