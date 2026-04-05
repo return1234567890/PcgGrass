@@ -5,6 +5,7 @@
 #include "Math/RandomStream.h"
 #include "DynamicMeshBuilder.h"
 #include "Engine/CollisionProfile.h"
+#include "Engine/World.h"
 #include "GrassBladeMeshBuilder.h"
 #include "GrassInstanceData.h"
 #include "MaterialDomain.h"
@@ -74,6 +75,16 @@ namespace PcgGrassHISM
 			FMath::Max(KINDA_SMALL_NUMBER, BladeH * I.Height));
 		return FTransform(Rot, Loc, Scale3D);
 	}
+
+	static FTransform BuildComponentNoScaleTransform(const USceneComponent* Component)
+	{
+		if (!Component)
+		{
+			return FTransform::Identity;
+		}
+		const FTransform ComponentToWorld = Component->GetComponentTransform();
+		return FTransform(ComponentToWorld.GetRotation(), ComponentToWorld.GetLocation(), FVector(1.f, 1.f, 1.f));
+	}
 } // namespace PcgGrassHISM
 
 void UProceduralGrassComponent::NormalizeDistributionRect(FVector2f& OutMin, FVector2f& OutMax)
@@ -86,6 +97,34 @@ void UProceduralGrassComponent::NormalizeDistributionRect(FVector2f& OutMin, FVe
 	{
 		Swap(OutMin.Y, OutMax.Y);
 	}
+}
+
+bool UProceduralGrassComponent::SampleGroundLocalZ(const FVector2f& LocalXY, float& OutLocalZ) const
+{
+	const UWorld* World = GetWorld();
+	if (!World || !bSnapToGroundOnGenerate)
+	{
+		return false;
+	}
+
+	const float TraceHalfHeight = FMath::Max(1.f, GroundTraceHalfHeight);
+	const FVector LocalStart(LocalXY.X, LocalXY.Y, TraceHalfHeight);
+	const FVector LocalEnd(LocalXY.X, LocalXY.Y, -TraceHalfHeight);
+	const FTransform LocalToWorld = PcgGrassHISM::BuildComponentNoScaleTransform(this);
+	const FVector WorldStart = LocalToWorld.TransformPosition(LocalStart);
+	const FVector WorldEnd = LocalToWorld.TransformPosition(LocalEnd);
+
+	FHitResult Hit;
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PcgGrassGroundSnap), false, GetOwner());
+	const bool bHit = World->LineTraceSingleByChannel(Hit, WorldStart, WorldEnd, GroundTraceChannel, QueryParams);
+	if (!bHit)
+	{
+		return false;
+	}
+
+	const FVector LocalHit = LocalToWorld.InverseTransformPosition(Hit.Location);
+	OutLocalZ = static_cast<float>(LocalHit.Z) + GroundZOffset;
+	return true;
 }
 
 void UProceduralGrassComponent::GenerateGrassDistribution()
@@ -113,7 +152,23 @@ void UProceduralGrassComponent::GenerateGrassDistribution()
 		FGrassClumpData& C = GrassClumps[i];
 		const float X = Stream.FRandRange(MinPt.X, MaxPt.X);
 		const float Y = Stream.FRandRange(MinPt.Y, MaxPt.Y);
-		C.CenterWS = FVector3f(X, Y, 0.f);
+		float LocalZ = 0.f;
+		if (bSnapToGroundOnGenerate)
+		{
+			if (SampleGroundLocalZ(FVector2f(X, Y), LocalZ))
+			{
+				C.CenterWS = FVector3f(X, Y, LocalZ);
+			}
+			else
+			{
+				LocalZ = bKeepOriginalZWhenNoGroundHit ? 0.f : GroundZOffset;
+				C.CenterWS = FVector3f(X, Y, LocalZ);
+			}
+		}
+		else
+		{
+			C.CenterWS = FVector3f(X, Y, 0.f);
+		}
 		C.Radius = TypicalRadius;
 		C.WindDirection = GlobalWindDirection;
 		C.WindStrength = Stream.FRandRange(0.6f, 1.4f);
@@ -131,7 +186,23 @@ void UProceduralGrassComponent::GenerateGrassDistribution()
 		FGrassInstanceData& Inst = GrassInstances[i];
 		const float X = Stream.FRandRange(MinPt.X, MaxPt.X);
 		const float Y = Stream.FRandRange(MinPt.Y, MaxPt.Y);
-		Inst.PositionWS = FVector3f(X, Y, 0.f);
+		float LocalZ = 0.f;
+		if (bSnapToGroundOnGenerate)
+		{
+			if (SampleGroundLocalZ(FVector2f(X, Y), LocalZ))
+			{
+				Inst.PositionWS = FVector3f(X, Y, LocalZ);
+			}
+			else
+			{
+				LocalZ = bKeepOriginalZWhenNoGroundHit ? 0.f : GroundZOffset;
+				Inst.PositionWS = FVector3f(X, Y, LocalZ);
+			}
+		}
+		else
+		{
+			Inst.PositionWS = FVector3f(X, Y, 0.f);
+		}
 		const float Angle = Stream.FRandRange(-UE_PI, UE_PI);
 		Inst.Direction = FVector2f(FMath::Cos(Angle), FMath::Sin(Angle));
 		Inst.Height = 1.f;
@@ -202,6 +273,9 @@ void UProceduralGrassComponent::ConfigureGrassHISM()
 	GrassHISM->SetCanEverAffectNavigation(false);
 	// Grass instances may be far from the actor/component origin; using parent bounds can cause incorrect frustum/occlusion culling.
 	GrassHISM->bUseAttachParentBound = false;
+	// Keep grass distribution/range stable in world space when the owning actor is scaled.
+	GrassHISM->SetUsingAbsoluteScale(true);
+	GrassHISM->SetWorldScale3D(FVector(1.f, 1.f, 1.f));
 }
 
 void UProceduralGrassComponent::BuildRuntimeBladeMeshIfNeeded()
@@ -319,6 +393,17 @@ void UProceduralGrassComponent::SyncRuntimeBladeMeshStaticMaterial(UMaterialInte
 	{
 		return;
 	}
+
+	auto EnsureValidUVChannelData = [](FStaticMaterial& InStaticMaterial)
+	{
+		if (!InStaticMaterial.UVChannelData.bInitialized)
+		{
+			// Runtime-built meshes can miss UV channel initialization, which triggers
+			// texture streaming ensure in UStaticMesh::GetUVChannelData.
+			InStaticMaterial.UVChannelData = FMeshUVChannelInfo(1.f);
+		}
+	};
+
 	TArray<FStaticMaterial>& Mats = RuntimeBladeMesh->GetStaticMaterials();
 #if WITH_EDITOR
 	RuntimeBladeMesh->Modify();
@@ -330,6 +415,7 @@ void UProceduralGrassComponent::SyncRuntimeBladeMeshStaticMaterial(UMaterialInte
 		Slot.MaterialInterface = Material;
 		Slot.MaterialSlotName = TEXT("GrassBlade");
 		Slot.ImportedMaterialSlotName = TEXT("GrassBlade");
+		EnsureValidUVChannelData(Slot);
 		Mats.Add(Slot);
 	}
 	else
@@ -339,6 +425,7 @@ void UProceduralGrassComponent::SyncRuntimeBladeMeshStaticMaterial(UMaterialInte
 		{
 			Mats[0].MaterialSlotName = TEXT("GrassBlade");
 		}
+		EnsureValidUVChannelData(Mats[0]);
 	}
 }
 

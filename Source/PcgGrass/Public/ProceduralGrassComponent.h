@@ -44,7 +44,8 @@ public:
 	UPROPERTY(Transient, VisibleAnywhere, Category = "GrassPCG|Render")
 	TObjectPtr<UStaticMesh> RuntimeBladeMesh;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Instances", meta = (TitleProperty = "PositionWS"))
+	/** Serialized for save/load; hidden from Details to avoid editor UI cost on large arrays. */
+	UPROPERTY(VisibleInstanceOnly, Category = "GrassPCG|Internal", meta = (HideInDetailPanel))
 	TArray<FGrassInstanceData> GrassInstances;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Clumps", meta = (TitleProperty = "CenterWS"))
@@ -65,6 +66,29 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate")
 	int32 DistributionRandomSeed = 1;
+
+	/** Snap generated clump/instance Z to ground by line trace when generating distribution. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate|GroundSnap")
+	bool bSnapToGroundOnGenerate = true;
+
+	/** Collision channel used by ground snap traces. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate|GroundSnap")
+	TEnumAsByte<ECollisionChannel> GroundTraceChannel = ECC_WorldStatic;
+
+	/** Half-height of vertical trace segment in component local space (cm). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate|GroundSnap", meta = (ClampMin = "1.0"))
+	float GroundTraceHalfHeight = 50000.f;
+
+	/** Extra local-space Z offset applied after snapping (cm). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate|GroundSnap")
+	float GroundZOffset = 0.f;
+
+	/**
+	 * If no ground hit is found (while snapping enabled), keep original generated Z (currently 0),
+	 * or use `GroundZOffset` as a fallback.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate|GroundSnap")
+	bool bKeepOriginalZWhenNoGroundHit = true;
 
 	/** If true, **BeginPlay** runs **GenerateGrassDistribution** once (runtime). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GrassPCG|Generate")
@@ -111,6 +135,7 @@ private:
 	void ApplyBladeMeshAndMaterial();
 	void BuildRuntimeBladeMeshIfNeeded();
 	void SyncRuntimeBladeMeshStaticMaterial(UMaterialInterface* Material);
+	bool SampleGroundLocalZ(const FVector2f& LocalXY, float& OutLocalZ) const;
 
 	// The blade mesh template dimensions used to convert clump absolute dimensions
 	// into per-instance scale (so it works even when `BladeMesh` is preauthored at a non-unit size).
